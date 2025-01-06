@@ -22,10 +22,12 @@
  * FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
  * DEALINGS IN THE SOFTWARE.
  */
-#if defined(__MK64FX512__) || defined(__MK66FX1M0__)
+#if defined(__IMXRT1062__)
 #include "SdioTeensy.h"
 #include "SdCardInfo.h"
 #include "SdioCard.h"
+
+
 //==============================================================================
 // limit of K66 due to errata KINETIS_K_0N65N.
 const uint32_t MAX_BLKCNT = 0XFFFF;
@@ -78,27 +80,7 @@ const uint32_t CMD_RESP_R6 = CMD_RESP_R1;
 
 const uint32_t CMD_RESP_R7 = CMD_RESP_R1;
 
-#if defined(__MK64FX512__) || defined(__MK66FX1M0__)
-const uint32_t DATA_READ = SDHC_XFERTYP_DTDSEL | SDHC_XFERTYP_DPSEL;
-
-const uint32_t DATA_READ_DMA = DATA_READ | SDHC_XFERTYP_DMAEN;
-
-const uint32_t DATA_READ_MULTI_DMA = DATA_READ_DMA | SDHC_XFERTYP_MSBSEL |
-                                     SDHC_XFERTYP_AC12EN | SDHC_XFERTYP_BCEN;
-
-const uint32_t DATA_READ_MULTI_PGM = DATA_READ | SDHC_XFERTYP_MSBSEL |
-                                     SDHC_XFERTYP_BCEN;
-
-const uint32_t DATA_WRITE_DMA = SDHC_XFERTYP_DPSEL | SDHC_XFERTYP_DMAEN;
-
-const uint32_t DATA_WRITE_MULTI_DMA = DATA_WRITE_DMA | SDHC_XFERTYP_MSBSEL |
-                                      SDHC_XFERTYP_AC12EN | SDHC_XFERTYP_BCEN;
-
-const uint32_t DATA_WRITE_MULTI_PGM = SDHC_XFERTYP_DPSEL | SDHC_XFERTYP_MSBSEL |
-                                      SDHC_XFERTYP_BCEN;
-
-#elif defined(__IMXRT1062__)
-// Use low bits for SDHC_MIX_CTRL since bits 15-0 of SDHC_XFERTYP are reserved.
+// Use low bits for m_psdhc->MIX_CTRL since bits 15-0 of m_psdhc->CMD_XFR_TYP are reserved.
 const uint32_t SDHC_MIX_CTRL_MASK = SDHC_MIX_CTRL_DMAEN | SDHC_MIX_CTRL_BCEN |
                                     SDHC_MIX_CTRL_AC12EN |
                                     SDHC_MIX_CTRL_DDR_EN |
@@ -124,7 +106,6 @@ const uint32_t DATA_WRITE_MULTI_DMA = DATA_WRITE_DMA | SDHC_MIX_CTRL_MSBSEL |
 
 const uint32_t DATA_WRITE_MULTI_PGM = SDHC_XFERTYP_DPSEL | SDHC_MIX_CTRL_MSBSEL;
 
-#endif  // defined(__MK64FX512__) || defined(__MK66FX1M0__)
 
 const uint32_t ACMD6_XFERTYP = SDHC_XFERTYP_CMDINX(ACMD6) | CMD_RESP_R1;
 
@@ -181,45 +162,21 @@ const uint32_t CMD38_XFERTYP = SDHC_XFERTYP_CMDINX(CMD38) | CMD_RESP_R1b;
 const uint32_t CMD55_XFERTYP = SDHC_XFERTYP_CMDINX(CMD55) | CMD_RESP_R1;
 
 //==============================================================================
-static bool cardCommand(uint32_t xfertyp, uint32_t arg);
-static void enableGPIO(bool enable);
-static void enableDmaIrs();
-static void initSDHC();
-static bool isBusyCMD13();
-static bool isBusyCommandComplete();
-static bool isBusyCommandInhibit();
-static bool readReg16(uint32_t xfertyp, void* data);
-static void setSdclk(uint32_t kHzMax);
-static bool yieldTimeout(bool (*fcn)());
-static bool waitDmaStatus();
-static bool waitTimeout(bool (*fcn)());
 //------------------------------------------------------------------------------
-static bool (*m_busyFcn)() = 0;
-static bool m_initDone = false;
-static bool m_version2;
-static bool m_highCapacity;
-static bool m_transferActive = false;
-static uint8_t m_errorCode = SD_CARD_ERROR_INIT_NOT_CALLED;
-static uint32_t m_errorLine = 0;
-static uint32_t m_rca;
-static volatile bool m_dmaBusy = false;
-static volatile uint32_t m_irqstat;
-static uint32_t m_sdClkKhz = 0;
-static uint32_t m_ocr;
-static cid_t m_cid;
-static csd_t m_csd;
 //==============================================================================
+SdioCard *SdioCard::s_pSdioCards[2] = {nullptr, nullptr};
+
 #define DBG_TRACE Serial.print("TRACE."); Serial.println(__LINE__); delay(200);
-#define USE_DEBUG_MODE 0
+#define USE_DEBUG_MODE 1
 #if USE_DEBUG_MODE
-#define DBG_IRQSTAT() if (SDHC_IRQSTAT) {Serial.print(__LINE__);\
-        Serial.print(" IRQSTAT "); Serial.println(SDHC_IRQSTAT, HEX);}
-static void printRegs(uint32_t line) {
-  uint32_t blkattr = SDHC_BLKATTR;
-  uint32_t xfertyp = SDHC_XFERTYP;
-  uint32_t prsstat = SDHC_PRSSTAT;
-  uint32_t proctl = SDHC_PROCTL;
-  uint32_t irqstat = SDHC_IRQSTAT;
+#define DBG_IRQSTAT() if (m_psdhc->INT_STATUS) {Serial.print(__LINE__);\
+        Serial.print(" IRQSTAT "); Serial.println(m_psdhc->INT_STATUS, HEX);}
+void SdioCard::printRegs(uint32_t line) {
+  uint32_t blkattr = m_psdhc->BLK_ATT;
+  uint32_t xfertyp = m_psdhc->CMD_XFR_TYP;
+  uint32_t prsstat = m_psdhc->PRES_STATE;
+  uint32_t proctl = m_psdhc->PROT_CTRL;
+  uint32_t irqstat = m_psdhc->INT_STATUS;
   Serial.print("\nLINE: ");
   Serial.println(line);
   Serial.print("BLKATTR ");
@@ -269,7 +226,7 @@ static void printRegs(uint32_t line) {
 //==============================================================================
 // Error function and macro.
 #define sdError(code) setSdErrorCode(code, __LINE__)
-inline bool setSdErrorCode(uint8_t code, uint32_t line) {
+inline bool SdioCard::setSdErrorCode(uint8_t code, uint32_t line) {
   m_errorCode = code;
   m_errorLine = line;
 #if USE_DEBUG_MODE
@@ -279,79 +236,85 @@ inline bool setSdErrorCode(uint8_t code, uint32_t line) {
 }
 //==============================================================================
 // ISR
-static void sdIrs() {
-  SDHC_IRQSIGEN = 0;
-  m_irqstat = SDHC_IRQSTAT;
-  SDHC_IRQSTAT = m_irqstat;
-#if defined(__IMXRT1062__)
-  SDHC_MIX_CTRL &= ~(SDHC_MIX_CTRL_AC23EN | SDHC_MIX_CTRL_DMAEN);
-#endif
-  m_dmaBusy = false;
+void SdioCard::sdIrs() {
+  USDHC1_INT_SIGNAL_EN = 0;
+  s_pSdioCards[0]->m_irqstat = USDHC1_INT_STATUS;
+  USDHC1_INT_STATUS = s_pSdioCards[0]->m_irqstat;
+  USDHC1_MIX_CTRL &= ~(SDHC_MIX_CTRL_AC23EN | SDHC_MIX_CTRL_DMAEN);
+  s_pSdioCards[0]->m_dmaBusy = false;
 }
+
+void SdioCard::sdIrs2() {
+  USDHC2_INT_SIGNAL_EN = 0;
+  s_pSdioCards[1]->m_irqstat = USDHC2_INT_STATUS;
+  USDHC2_INT_STATUS = s_pSdioCards[0]->m_irqstat;
+  USDHC2_MIX_CTRL &= ~(SDHC_MIX_CTRL_AC23EN | SDHC_MIX_CTRL_DMAEN);
+  s_pSdioCards[1]->m_dmaBusy = false;
+}
+
+
 //==============================================================================
 // GPIO and clock functions.
-#if defined(__MK64FX512__) || defined(__MK66FX1M0__)
-//------------------------------------------------------------------------------
-static void enableGPIO(bool enable) {
-  const uint32_t PORT_CLK = PORT_PCR_MUX(4) | PORT_PCR_DSE;
-  const uint32_t PORT_CMD_DATA = PORT_CLK   | PORT_PCR_PE | PORT_PCR_PS;
-  const uint32_t PORT_PUP = PORT_PCR_MUX(1) | PORT_PCR_PE | PORT_PCR_PS;
 
-  PORTE_PCR0 = enable ? PORT_CMD_DATA : PORT_PUP;  // SDHC_D1
-  PORTE_PCR1 = enable ? PORT_CMD_DATA : PORT_PUP;  // SDHC_D0
-  PORTE_PCR2 = enable ? PORT_CLK      : PORT_PUP;  // SDHC_CLK
-  PORTE_PCR3 = enable ? PORT_CMD_DATA : PORT_PUP;  // SDHC_CMD
-  PORTE_PCR4 = enable ? PORT_CMD_DATA : PORT_PUP;  // SDHC_D3
-  PORTE_PCR5 = enable ? PORT_CMD_DATA : PORT_PUP;  // SDHC_D2
-}
 //------------------------------------------------------------------------------
-static void initClock() {
-#ifdef HAS_KINETIS_MPU
-  // Allow SDHC Bus Master access.
-  MPU_RGDAAC0 |= 0x0C000000;
-#endif  // HAS_KINETIS_MPU
-  // Enable SDHC clock.
-  SIM_SCGC3 |= SIM_SCGC3_SDHC;
-}
-static uint32_t baseClock() { return F_CPU;}
-
-#elif defined(__IMXRT1062__)
-//------------------------------------------------------------------------------
-static void gpioMux(uint8_t mode) {
-  IOMUXC_SW_MUX_CTL_PAD_GPIO_SD_B0_04 = mode;  // DAT2
-  IOMUXC_SW_MUX_CTL_PAD_GPIO_SD_B0_05 = mode;  // DAT3
-  IOMUXC_SW_MUX_CTL_PAD_GPIO_SD_B0_00 = mode;  // CMD
-  IOMUXC_SW_MUX_CTL_PAD_GPIO_SD_B0_01 = mode;  // CLK
-  IOMUXC_SW_MUX_CTL_PAD_GPIO_SD_B0_02 = mode;  // DAT0
-  IOMUXC_SW_MUX_CTL_PAD_GPIO_SD_B0_03 = mode;  // DAT1
+void SdioCard::gpioMux(uint8_t mode, bool fUseSDIO2) {
+  if (!fUseSDIO2) {
+    IOMUXC_SW_MUX_CTL_PAD_GPIO_SD_B0_04 = mode;  // DAT2
+    IOMUXC_SW_MUX_CTL_PAD_GPIO_SD_B0_05 = mode;  // DAT3
+    IOMUXC_SW_MUX_CTL_PAD_GPIO_SD_B0_00 = mode;  // CMD
+    IOMUXC_SW_MUX_CTL_PAD_GPIO_SD_B0_01 = mode;  // CLK
+    IOMUXC_SW_MUX_CTL_PAD_GPIO_SD_B0_02 = mode;  // DAT0
+    IOMUXC_SW_MUX_CTL_PAD_GPIO_SD_B0_03 = mode;  // DAT1
+  } else {
+    IOMUXC_SW_MUX_CTL_PAD_GPIO_AD_B1_07 = mode; //USDHC2_DATA3
+    IOMUXC_SW_MUX_CTL_PAD_GPIO_AD_B1_06 = mode; //USDHC2_DATA2
+    IOMUXC_SW_MUX_CTL_PAD_GPIO_AD_B1_08 = mode; //USDHC2_CMD
+    IOMUXC_SW_MUX_CTL_PAD_GPIO_AD_B1_09 = mode; //USDHC2_CLK
+    IOMUXC_SW_MUX_CTL_PAD_GPIO_AD_B1_04 = mode; //USDHC2_DATA0
+    IOMUXC_SW_MUX_CTL_PAD_GPIO_AD_B1_05 = mode; //USDHC2_DATA1
+  }
 }
 //------------------------------------------------------------------------------
 // add speed strength args?
-static void enableGPIO(bool enable) {
+void SdioCard::enableGPIO(bool enable, bool fUseSDIO2) {
   const uint32_t CLOCK_MASK = IOMUXC_SW_PAD_CTL_PAD_PKE |
-#if defined(__IMXRT1062__)
                               IOMUXC_SW_PAD_CTL_PAD_DSE(7) |
-#else  // defined(ARDUINO_TEENSY41)
-                              IOMUXC_SW_PAD_CTL_PAD_DSE(4) |  ///// WHG
-#endif  // defined(ARDUINO_TEENSY41)
                               IOMUXC_SW_PAD_CTL_PAD_SPEED(2);
 
   const uint32_t DATA_MASK = CLOCK_MASK | IOMUXC_SW_PAD_CTL_PAD_PUE |
                              IOMUXC_SW_PAD_CTL_PAD_PUS(1);
   if (enable) {
-    gpioMux(0);
-    IOMUXC_SW_PAD_CTL_PAD_GPIO_SD_B0_04 = DATA_MASK;   // DAT2
-    IOMUXC_SW_PAD_CTL_PAD_GPIO_SD_B0_05 = DATA_MASK;   // DAT3
-    IOMUXC_SW_PAD_CTL_PAD_GPIO_SD_B0_00 = DATA_MASK;   // CMD
-    IOMUXC_SW_PAD_CTL_PAD_GPIO_SD_B0_01 = CLOCK_MASK;  // CLK
-    IOMUXC_SW_PAD_CTL_PAD_GPIO_SD_B0_02 = DATA_MASK;   // DAT0
-    IOMUXC_SW_PAD_CTL_PAD_GPIO_SD_B0_03 = DATA_MASK;   // DAT1
+    gpioMux(fUseSDIO2? 6 : 0, fUseSDIO2);  // SDIO2 is on ALT6
+    if (!fUseSDIO2) {
+      IOMUXC_SW_PAD_CTL_PAD_GPIO_SD_B0_04 = DATA_MASK;   // DAT2
+      IOMUXC_SW_PAD_CTL_PAD_GPIO_SD_B0_05 = DATA_MASK;   // DAT3
+      IOMUXC_SW_PAD_CTL_PAD_GPIO_SD_B0_00 = DATA_MASK;   // CMD
+      IOMUXC_SW_PAD_CTL_PAD_GPIO_SD_B0_01 = CLOCK_MASK;  // CLK
+      IOMUXC_SW_PAD_CTL_PAD_GPIO_SD_B0_02 = DATA_MASK;   // DAT0
+      IOMUXC_SW_PAD_CTL_PAD_GPIO_SD_B0_03 = DATA_MASK;   // DAT1
+    } else {      
+      IOMUXC_SW_PAD_CTL_PAD_GPIO_AD_B1_07 = DATA_MASK; //USDHC2_DATA3
+      IOMUXC_SW_PAD_CTL_PAD_GPIO_AD_B1_06 = DATA_MASK; //USDHC2_DATA2
+      IOMUXC_SW_PAD_CTL_PAD_GPIO_AD_B1_08 = DATA_MASK; //USDHC2_CMD
+      IOMUXC_SW_PAD_CTL_PAD_GPIO_AD_B1_09 = CLOCK_MASK; //USDHC2_CLK
+      IOMUXC_SW_PAD_CTL_PAD_GPIO_AD_B1_04 = DATA_MASK; //USDHC2_DATA0
+      IOMUXC_SW_PAD_CTL_PAD_GPIO_AD_B1_05 = DATA_MASK; //USDHC2_DATA1
+
+      // We need to set select input bits...
+      IOMUXC_USDHC2_CLK_SELECT_INPUT = 0x1;
+      IOMUXC_USDHC2_CMD_SELECT_INPUT = 0x01;
+      IOMUXC_USDHC2_DATA0_SELECT_INPUT = 0x01;
+      IOMUXC_USDHC2_DATA1_SELECT_INPUT = 0x01;
+      IOMUXC_USDHC2_DATA2_SELECT_INPUT = 0x01;
+      IOMUXC_USDHC2_DATA3_SELECT_INPUT = 0x01;
+
+    }
   } else {
-    gpioMux(5);
+    gpioMux(5, fUseSDIO2);
   }
 }
 //------------------------------------------------------------------------------
-static void initClock() {
+void SdioCard::initClock(bool fUseSDIO2) {
   /* set PDF_528 PLL2PFD0 */
   CCM_ANALOG_PFD_528 |= (1 << 7);
   CCM_ANALOG_PFD_528 &= ~(0x3F << 0);
@@ -359,58 +322,66 @@ static void initClock() {
   CCM_ANALOG_PFD_528 &= ~(1 << 7);
 
   /* Enable USDHC clock. */
-  CCM_CCGR6 |= CCM_CCGR6_USDHC1(CCM_CCGR_ON);
-  CCM_CSCDR1 &= ~(CCM_CSCDR1_USDHC1_CLK_PODF_MASK);
-  CCM_CSCMR1 |= CCM_CSCMR1_USDHC1_CLK_SEL;          // PLL2PFD0
-//  CCM_CSCDR1 |= CCM_CSCDR1_USDHC1_CLK_PODF((7)); / &0x7  WHG
-  CCM_CSCDR1 |= CCM_CSCDR1_USDHC1_CLK_PODF((1));
+  if (!fUseSDIO2) {
+    CCM_CCGR6 |= CCM_CCGR6_USDHC1(CCM_CCGR_ON);
+    CCM_CSCDR1 &= ~(CCM_CSCDR1_USDHC1_PODF(7));
+    CCM_CSCMR1 |= CCM_CSCMR1_USDHC1_CLK_SEL;          // PLL2PFD0
+  //  CCM_CSCDR1 |= CCM_CSCDR1_USDHC1_CLK_PODF((7)); / &0x7  WHG
+    CCM_CSCDR1 |= CCM_CSCDR1_USDHC1_CLK_PODF((1));
+  } else {
+    CCM_CCGR6 |= CCM_CCGR6_USDHC2(CCM_CCGR_ON);
+    CCM_CSCDR1 &= ~(CCM_CSCDR1_USDHC2_PODF(7));
+    CCM_CSCMR1 |= CCM_CSCMR1_USDHC2_CLK_SEL;          // PLL2PFD0
+  //  CCM_CSCDR1 |= CCM_CSCDR1_USDHC2_CLK_PODF((7)); / &0x7  WHG
+    CCM_CSCDR1 |= CCM_CSCDR1_USDHC2_PODF(1);
+  }
 }
 //------------------------------------------------------------------------------
-static uint32_t baseClock() {
+uint32_t SdioCard::baseClock() {
   uint32_t divider = ((CCM_CSCDR1 >> 11) & 0x7) + 1;
   return (528000000U * 3)/((CCM_ANALOG_PFD_528 & 0x3F)/6)/divider;
 }
-#endif  // defined(__MK64FX512__) || defined(__MK66FX1M0__)
 //==============================================================================
 // Static functions.
-static bool cardAcmd(uint32_t rca, uint32_t xfertyp, uint32_t arg) {
+bool SdioCard::cardAcmd(uint32_t rca, uint32_t xfertyp, uint32_t arg) {
   return cardCommand(CMD55_XFERTYP, rca) && cardCommand (xfertyp, arg);
 }
 //------------------------------------------------------------------------------
-static bool cardCommand(uint32_t xfertyp, uint32_t arg) {
+bool SdioCard::cardCommand(uint32_t xfertyp, uint32_t arg) {
   DBG_IRQSTAT();
-  if (waitTimeout(isBusyCommandInhibit)) {
+  if (waitTimeout(&SdioCard::isBusyCommandInhibit)) {
+    Serial.printf("cardCommand(%x, %x) error isBusyCommandInhibit)\n", xfertyp, arg);
     return false;  // Caller will set errorCode.
   }
-  SDHC_CMDARG = arg;
-#if defined(__IMXRT1062__)
+  m_psdhc->CMD_ARG = arg;
   // Set MIX_CTRL if data transfer.
   if (xfertyp & SDHC_XFERTYP_DPSEL) {
-    SDHC_MIX_CTRL &= ~SDHC_MIX_CTRL_MASK;
-    SDHC_MIX_CTRL |= xfertyp & SDHC_MIX_CTRL_MASK;
+    m_psdhc->MIX_CTRL &= ~SDHC_MIX_CTRL_MASK;
+    m_psdhc->MIX_CTRL |= xfertyp & SDHC_MIX_CTRL_MASK;
   }
   xfertyp &= ~SDHC_MIX_CTRL_MASK;
-#endif  // defined(__IMXRT1062__)
-  SDHC_XFERTYP = xfertyp;
-  if (waitTimeout(isBusyCommandComplete)) {
+  m_psdhc->CMD_XFR_TYP = xfertyp;
+  if (waitTimeout(&SdioCard::isBusyCommandComplete)) {
+    Serial.printf("cardCommand(%x, %x) error isBusyCommandComplete\n", xfertyp, arg);
     return false;  // Caller will set errorCode.
   }
-  m_irqstat = SDHC_IRQSTAT;
-  SDHC_IRQSTAT = m_irqstat;
+  m_irqstat = m_psdhc->INT_STATUS;
+  m_psdhc->INT_STATUS = m_irqstat;
 
-  return (m_irqstat & SDHC_IRQSTAT_CC) &&
-         !(m_irqstat & SDHC_IRQSTAT_CMD_ERROR);
+  bool return_value = (m_irqstat & SDHC_IRQSTAT_CC) && !(m_irqstat & SDHC_IRQSTAT_CMD_ERROR);
+  if (!return_value) Serial.printf("cardCommand(%x, %x) error return false", xfertyp, arg);  
+  return return_value;      
 }
 //------------------------------------------------------------------------------
-static bool cardCMD6(uint32_t arg, uint8_t* status) {
+bool SdioCard::cardCMD6(uint32_t arg, uint8_t* status) {
   // CMD6 returns 64 bytes.
-  if (waitTimeout(isBusyCMD13)) {
+  if (waitTimeout(&SdioCard::isBusyCMD13)) {
     return sdError(SD_CARD_ERROR_CMD13);
   }
   enableDmaIrs();
-  SDHC_DSADDR  = (uint32_t)status;
-  SDHC_BLKATTR = SDHC_BLKATTR_BLKCNT(1) | SDHC_BLKATTR_BLKSIZE(64);
-  SDHC_IRQSIGEN = SDHC_IRQSIGEN_MASK;
+  m_psdhc->DS_ADDR  = (uint32_t)status;
+  m_psdhc->BLK_ATT = SDHC_BLKATTR_BLKCNT(1) | SDHC_BLKATTR_BLKSIZE(64);
+  m_psdhc->INT_SIGNAL_EN = SDHC_IRQSIGEN_MASK;
   if (!cardCommand(CMD6_XFERTYP, arg)) {
     return sdError(SD_CARD_ERROR_CMD6);
   }
@@ -420,93 +391,106 @@ static bool cardCMD6(uint32_t arg, uint8_t* status) {
   return true;
 }
 //------------------------------------------------------------------------------
-static void enableDmaIrs() {
+void SdioCard::enableDmaIrs() {
   m_dmaBusy = true;
   m_irqstat = 0;
 }
 //------------------------------------------------------------------------------
-static void initSDHC() {
-  initClock();
+void SdioCard::initSDHC() {
+  // initialize Hardware registers and this ointer
+  bool fUseSDIO2 = (m_sdioConfig.options() & USE_SDIO2)? true : false;
+  if (fUseSDIO2) {
+    s_pSdioCards[1] = this; 
+    m_psdhc = (IMXRT_USDHC_t*)IMXRT_USDHC2_ADDRESS;
+  } else {
+    s_pSdioCards[0] = this; 
+    m_psdhc = (IMXRT_USDHC_t*)IMXRT_USDHC1_ADDRESS;    
+  }
+
+  initClock(fUseSDIO2);
 
   // Disable GPIO clock.
-  enableGPIO(false);
+  enableGPIO(false, fUseSDIO2);
 
-#if defined (__IMXRT1062__)
-  SDHC_MIX_CTRL |= 0x80000000;
-#endif  //  (__IMXRT1062__)
+  m_psdhc->MIX_CTRL |= 0x80000000;
 
   // Reset SDHC. Use default Water Mark Level of 16.
-  SDHC_SYSCTL |= SDHC_SYSCTL_RSTA | SDHC_SYSCTL_SDCLKFS(0x80);
+  m_psdhc->SYS_CTRL |= SDHC_SYSCTL_RSTA | SDHC_SYSCTL_SDCLKFS(0x80);
 
-  while (SDHC_SYSCTL & SDHC_SYSCTL_RSTA) {
+  while (m_psdhc->SYS_CTRL & SDHC_SYSCTL_RSTA) {
   }
 
   // Set initial SCK rate.
   setSdclk(SD_MAX_INIT_RATE_KHZ);
 
-  enableGPIO(true);
+  enableGPIO(true, fUseSDIO2);
 
   // Enable desired IRQSTAT bits.
-  SDHC_IRQSTATEN = SDHC_IRQSTATEN_MASK;
+  m_psdhc->INT_STATUS_EN = SDHC_IRQSTATEN_MASK;
 
-  attachInterruptVector(IRQ_SDHC, sdIrs);
-  NVIC_SET_PRIORITY(IRQ_SDHC, 6*16);
-  NVIC_ENABLE_IRQ(IRQ_SDHC);
-
+  if (!fUseSDIO2) {
+    attachInterruptVector(IRQ_SDHC1, sdIrs);
+    NVIC_SET_PRIORITY(IRQ_SDHC1, 6*16);
+    NVIC_ENABLE_IRQ(IRQ_SDHC1);
+  } else {
+    attachInterruptVector(IRQ_SDHC2, sdIrs2);
+    NVIC_SET_PRIORITY(IRQ_SDHC2, 6*16);
+    NVIC_ENABLE_IRQ(IRQ_SDHC2);    
+  }
   // Send 80 clocks to card.
-  SDHC_SYSCTL |= SDHC_SYSCTL_INITA;
-  while (SDHC_SYSCTL & SDHC_SYSCTL_INITA) {
+  m_psdhc->SYS_CTRL |= SDHC_SYSCTL_INITA;
+  while (m_psdhc->SYS_CTRL & SDHC_SYSCTL_INITA) {
   }
 }
 //------------------------------------------------------------------------------
-static uint32_t statusCMD13() {
-  return cardCommand(CMD13_XFERTYP, m_rca) ? SDHC_CMDRSP0 : 0;
+uint32_t SdioCard::statusCMD13() {
+  return cardCommand(CMD13_XFERTYP, m_rca) ? m_psdhc->CMD_RSP0 : 0;
 }
 //------------------------------------------------------------------------------
-static bool isBusyCMD13() {
+bool SdioCard::isBusyCMD13() {
   return !(statusCMD13() & CARD_STATUS_READY_FOR_DATA);
 }
 //------------------------------------------------------------------------------
-static bool isBusyCommandComplete() {
-  return !(SDHC_IRQSTAT & (SDHC_IRQSTAT_CC | SDHC_IRQSTAT_CMD_ERROR));
+bool SdioCard::isBusyCommandComplete() {
+  return !(m_psdhc->INT_STATUS & (SDHC_IRQSTAT_CC | SDHC_IRQSTAT_CMD_ERROR));
 }
 //------------------------------------------------------------------------------
-static bool isBusyCommandInhibit() {
-  return SDHC_PRSSTAT & SDHC_PRSSTAT_CIHB;
+bool SdioCard::isBusyCommandInhibit() {
+  return m_psdhc->PRES_STATE & SDHC_PRSSTAT_CIHB;
 }
 //------------------------------------------------------------------------------
-static bool isBusyDat() {
-  return SDHC_PRSSTAT & (1 << 24) ? false : true;
+bool SdioCard::isBusyDat() {
+  return m_psdhc->PRES_STATE & (1 << 24) ? false : true;
 }
 //------------------------------------------------------------------------------
-static bool isBusyDMA() {
+bool SdioCard::isBusyDMA() {
   return m_dmaBusy;
 }
 //------------------------------------------------------------------------------
-static bool isBusyFifoRead() {
-  return !(SDHC_PRSSTAT & SDHC_PRSSTAT_BREN);
+bool SdioCard::isBusyFifoRead() {
+  return !(m_psdhc->PRES_STATE & SDHC_PRSSTAT_BREN);
 }
 //------------------------------------------------------------------------------
-static bool isBusyFifoWrite() {
-  return !(SDHC_PRSSTAT & SDHC_PRSSTAT_BWEN);
+bool SdioCard::isBusyFifoWrite() {
+  return !(m_psdhc->PRES_STATE & SDHC_PRSSTAT_BWEN);
 }
 //------------------------------------------------------------------------------
-static bool isBusyTransferComplete() {
-  return !(SDHC_IRQSTAT & (SDHC_IRQSTAT_TC | SDHC_IRQSTAT_ERROR));
+bool SdioCard::isBusyTransferComplete() {
+  return !(m_psdhc->INT_STATUS & (SDHC_IRQSTAT_TC | SDHC_IRQSTAT_ERROR));
 }
 //------------------------------------------------------------------------------
-static bool rdWrSectors(uint32_t xfertyp,
+bool SdioCard::rdWrSectors(uint32_t xfertyp,
                        uint32_t sector, uint8_t* buf, size_t n) {
   if ((3 & (uint32_t)buf) || n == 0) {
     return sdError(SD_CARD_ERROR_DMA);
   }
-  if (yieldTimeout(isBusyCMD13)) {
+  if (yieldTimeout(&SdioCard::isBusyCMD13)) {
     return sdError(SD_CARD_ERROR_CMD13);
   }
   enableDmaIrs();
-  SDHC_DSADDR  = (uint32_t)buf;
-  SDHC_BLKATTR = SDHC_BLKATTR_BLKCNT(n) | SDHC_BLKATTR_BLKSIZE(512);
-  SDHC_IRQSIGEN = SDHC_IRQSIGEN_MASK;
+  m_psdhc->DS_ADDR  = (uint32_t)buf;
+  m_psdhc->BLK_ATT = SDHC_BLKATTR_BLKCNT(n) | SDHC_BLKATTR_BLKSIZE(512);
+  m_psdhc->INT_SIGNAL_EN = SDHC_IRQSIGEN_MASK;
   if (!cardCommand(xfertyp, m_highCapacity ? sector : 512*sector)) {
     return false;
   }
@@ -514,12 +498,12 @@ static bool rdWrSectors(uint32_t xfertyp,
 }
 //------------------------------------------------------------------------------
 // Read 16 byte CID or CSD register.
-static bool readReg16(uint32_t xfertyp, void* data) {
+bool SdioCard::readReg16(uint32_t xfertyp, void* data) {
   uint8_t* d = reinterpret_cast<uint8_t*>(data);
   if (!cardCommand(xfertyp, m_rca)) {
     return false;  // Caller will set errorCode.
   }
-  uint32_t sr[] = {SDHC_CMDRSP0, SDHC_CMDRSP1, SDHC_CMDRSP2, SDHC_CMDRSP3};
+  uint32_t sr[] = {m_psdhc->CMD_RSP0, m_psdhc->CMD_RSP1, m_psdhc->CMD_RSP2, m_psdhc->CMD_RSP3};
   for (int i = 0; i < 15; i++) {
     d[14 - i] = sr[i/4] >> 8*(i%4);
   }
@@ -527,7 +511,7 @@ static bool readReg16(uint32_t xfertyp, void* data) {
   return true;
 }
 //------------------------------------------------------------------------------
-static void setSdclk(uint32_t kHzMax) {
+void SdioCard::setSdclk(uint32_t kHzMax) {
   const uint32_t DVS_LIMIT = 0X10;
   const uint32_t SDCLKFS_LIMIT = 0X100;
   uint32_t dvs = 1;
@@ -544,56 +528,48 @@ static void setSdclk(uint32_t kHzMax) {
   m_sdClkKhz = base/(1000*sdclkfs*dvs);
   sdclkfs >>= 1;
   dvs--;
-#if defined(__MK64FX512__) || defined(__MK66FX1M0__)
-  // Disable SDHC clock.
-  SDHC_SYSCTL &= ~SDHC_SYSCTL_SDCLKEN;
-#endif  // defined(__MK64FX512__) || defined(__MK66FX1M0__)
 
   // Change dividers.
-  uint32_t sysctl = SDHC_SYSCTL & ~(SDHC_SYSCTL_DTOCV_MASK
+  uint32_t sysctl = m_psdhc->SYS_CTRL & ~(SDHC_SYSCTL_DTOCV_MASK
                     | SDHC_SYSCTL_DVS_MASK | SDHC_SYSCTL_SDCLKFS_MASK);
 
-  SDHC_SYSCTL = sysctl | SDHC_SYSCTL_DTOCV(0x0E) | SDHC_SYSCTL_DVS(dvs)
+  m_psdhc->SYS_CTRL = sysctl | SDHC_SYSCTL_DTOCV(0x0E) | SDHC_SYSCTL_DVS(dvs)
                 | SDHC_SYSCTL_SDCLKFS(sdclkfs);
 
   // Wait until the SDHC clock is stable.
-  while (!(SDHC_PRSSTAT & SDHC_PRSSTAT_SDSTB)) {
+  while (!(m_psdhc->PRES_STATE & SDHC_PRSSTAT_SDSTB)) {
   }
 
-#if defined(__MK64FX512__) || defined(__MK66FX1M0__)
-  // Enable the SDHC clock.
-  SDHC_SYSCTL |= SDHC_SYSCTL_SDCLKEN;
-#endif  // defined(__MK64FX512__) || defined(__MK66FX1M0__)
 }
 //------------------------------------------------------------------------------
-static bool transferStop() {
+bool SdioCard::transferStop() {
   // This fix allows CDIHB to be cleared in Tennsy 3.x without a reset.
-  SDHC_PROCTL &= ~SDHC_PROCTL_SABGREQ;
+  m_psdhc->PROT_CTRL &= ~SDHC_PROCTL_SABGREQ;
   if (!cardCommand(CMD12_XFERTYP, 0)) {
     return sdError(SD_CARD_ERROR_CMD12);
   }
-  if (yieldTimeout(isBusyDat)) {
+  if (yieldTimeout(&SdioCard::isBusyDat)) {
     return sdError(SD_CARD_ERROR_CMD13);
   }
-  if (SDHC_PRSSTAT & SDHC_PRSSTAT_CDIHB) {
+  if (m_psdhc->PRES_STATE & SDHC_PRSSTAT_CDIHB) {
     // This should not happen after above fix.
     // Save registers before reset DAT lines.
-    uint32_t irqsststen = SDHC_IRQSTATEN;
-    uint32_t proctl = SDHC_PROCTL & ~SDHC_PROCTL_SABGREQ;
+    uint32_t irqsststen = m_psdhc->INT_STATUS_EN;
+    uint32_t proctl = m_psdhc->PROT_CTRL & ~SDHC_PROCTL_SABGREQ;
     // Do reset to clear CDIHB.  Should be a better way!
-    SDHC_SYSCTL |= SDHC_SYSCTL_RSTD;
+    m_psdhc->SYS_CTRL |= SDHC_SYSCTL_RSTD;
     // Restore registers.
-    SDHC_IRQSTATEN = irqsststen;
-    SDHC_PROCTL = proctl;
+    m_psdhc->INT_STATUS_EN = irqsststen;
+    m_psdhc->PROT_CTRL = proctl;
   }
   return true;
 }
 //------------------------------------------------------------------------------
 // Return true if timeout occurs.
-static bool yieldTimeout(bool (*fcn)()) {
+bool SdioCard::yieldTimeout(pcheckfcn fcn) {
   m_busyFcn = fcn;
   uint32_t m = micros();
-  while (fcn()) {
+  while ((this->*fcn)()) {
     if ((micros() - m) > BUSY_TIMEOUT_MICROS) {
       m_busyFcn = 0;
       return true;
@@ -604,17 +580,17 @@ static bool yieldTimeout(bool (*fcn)()) {
   return false;  // Caller will set errorCode.
 }
 //------------------------------------------------------------------------------
-static bool waitDmaStatus() {
-  if (yieldTimeout(isBusyDMA)) {
+bool SdioCard::waitDmaStatus() {
+  if (yieldTimeout(&SdioCard::isBusyDMA)) {
     return false;  // Caller will set errorCode.
   }
   return (m_irqstat & SDHC_IRQSTAT_TC) && !(m_irqstat & SDHC_IRQSTAT_ERROR);
 }
 //------------------------------------------------------------------------------
 // Return true if timeout occurs.
-static bool waitTimeout(bool (*fcn)()) {
+bool SdioCard::waitTimeout(pcheckfcn fcn) {
   uint32_t m = micros();
-  while (fcn()) {
+  while ((this->*fcn)()) {
     if ((micros() - m) > BUSY_TIMEOUT_MICROS) {
       return true;
     }
@@ -622,14 +598,21 @@ static bool waitTimeout(bool (*fcn)()) {
   return false;  // Caller will set errorCode.
 }
 //------------------------------------------------------------------------------
-static bool waitTransferComplete() {
+bool SdioCard::waitTransferComplete() {
   if (!m_transferActive) {
     return true;
   }
-  bool timeOut = waitTimeout(isBusyTransferComplete);
+  uint32_t m = micros();
+  bool timeOut = false;
+  while (isBusyTransferComplete()) {
+    if ((micros() - m) > BUSY_TIMEOUT_MICROS) {
+      timeOut = true;
+      break;
+    }
+  }
   m_transferActive = false;
-  m_irqstat = SDHC_IRQSTAT;
-  SDHC_IRQSTAT = m_irqstat;
+  m_irqstat = m_psdhc->INT_STATUS;
+  m_psdhc->INT_STATUS = m_irqstat;
   if (timeOut || (m_irqstat & SDHC_IRQSTAT_ERROR)) {
     return sdError(SD_CARD_ERROR_TRANSFER_COMPLETE);
   }
@@ -647,23 +630,25 @@ bool SdioCard::begin(SdioConfig sdioConfig) {
   m_errorCode = SD_CARD_ERROR_NONE;
   m_highCapacity = false;
   m_version2 = false;
+  bool fUseSDIO2 = (m_sdioConfig.options() & USE_SDIO2)? true : false;
+  Serial.printf("SdioCard::begin: %u\n", fUseSDIO2);
 
   // initialize controller.
   initSDHC();
   if (!cardCommand(CMD0_XFERTYP, 0)) {
+    Serial.println("cardCommand(CMD0_XFERTYP,0) -- failed");
     return sdError(SD_CARD_ERROR_CMD0);
   }
   // Try several times for case of reset delay.
   for (uint32_t i = 0; i < CMD8_RETRIES; i++) {
     if (cardCommand(CMD8_XFERTYP, 0X1AA)) {
-      if (SDHC_CMDRSP0 != 0X1AA) {
+      if (m_psdhc->CMD_RSP0 != 0X1AA) {
         return sdError(SD_CARD_ERROR_CMD8);
       }
       m_version2 = true;
       break;
     }
   }
-#if defined(__IMXRT1062__)
   // Old version 1 cards have trouble with Teensy 4.1 after CMD8.
   // For reasons unknown, SDIO stops working after the cards does
   // not reply.  Simply restarting and CMD0 is a crude workaround.
@@ -671,7 +656,6 @@ bool SdioCard::begin(SdioConfig sdioConfig) {
     initSDHC();
     cardCommand(CMD0_XFERTYP, 0);
   }
-#endif
   arg = m_version2 ? 0X40300000 : 0x00300000;
   int m = micros();
   do {
@@ -679,9 +663,9 @@ bool SdioCard::begin(SdioConfig sdioConfig) {
        ((micros() - m) > BUSY_TIMEOUT_MICROS)) {
       return sdError(SD_CARD_ERROR_ACMD41);
     }
-  } while ((SDHC_CMDRSP0 & 0x80000000) == 0);
-  m_ocr = SDHC_CMDRSP0;
-  if (SDHC_CMDRSP0 & 0x40000000) {
+  } while ((m_psdhc->CMD_RSP0 & 0x80000000) == 0);
+  m_ocr = m_psdhc->CMD_RSP0;
+  if (m_psdhc->CMD_RSP0 & 0x40000000) {
     // Is high capacity.
     m_highCapacity = true;
   }
@@ -691,7 +675,7 @@ bool SdioCard::begin(SdioConfig sdioConfig) {
   if (!cardCommand(CMD3_XFERTYP, 0)) {
     return sdError(SD_CARD_ERROR_CMD3);
   }
-  m_rca = SDHC_CMDRSP0 & 0xFFFF0000;
+  m_rca = m_psdhc->CMD_RSP0 & 0xFFFF0000;
 
   if (!readReg16(CMD9_XFERTYP, &m_csd)) {
     return sdError(SD_CARD_ERROR_CMD9);
@@ -707,10 +691,10 @@ bool SdioCard::begin(SdioConfig sdioConfig) {
     return sdError(SD_CARD_ERROR_ACMD6);
   }
   // Set SDHC to bus width four.
-  SDHC_PROCTL &= ~SDHC_PROCTL_DTW_MASK;
-  SDHC_PROCTL |= SDHC_PROCTL_DTW(SDHC_PROCTL_DTW_4BIT);
+  m_psdhc->PROT_CTRL &= ~SDHC_PROCTL_DTW_MASK;
+  m_psdhc->PROT_CTRL |= SDHC_PROCTL_DTW(SDHC_PROCTL_DTW_4BIT);
 
-  SDHC_WML = SDHC_WML_RDWML(FIFO_WML) | SDHC_WML_WRWML(FIFO_WML);
+  m_psdhc->WTMK_LVL = SDHC_WML_RDWML(FIFO_WML) | SDHC_WML_WRWML(FIFO_WML);
 
   // Determine if High Speed mode is supported and set frequency.
   // Check status[16] for error 0XF or status[16] for new mode 0X1.
@@ -744,13 +728,13 @@ bool SdioCard::begin(SdioConfig sdioConfig) {
     }
   }
   // Disable GPIO.
-  enableGPIO(false);
+  enableGPIO(false, fUseSDIO2);
 
   // Set the SDHC SCK frequency.
   setSdclk(kHzSdClk);
 
   // Enable GPIO.
-  enableGPIO(true);
+  enableGPIO(true, fUseSDIO2);
   m_initDone = true;
   return true;
 }
@@ -783,7 +767,7 @@ bool SdioCard::erase(uint32_t firstSector, uint32_t lastSector) {
   if (!cardCommand(CMD38_XFERTYP, 0)) {
     return sdError(SD_CARD_ERROR_CMD38);
   }
-  if (waitTimeout(isBusyCMD13)) {
+  if (waitTimeout(&SdioCard::isBusyCMD13)) {
     return sdError(SD_CARD_ERROR_ERASE_TIMEOUT);
   }
   return true;
@@ -803,25 +787,16 @@ uint32_t SdioCard::errorLine() const {
 //------------------------------------------------------------------------------
 bool SdioCard::isBusy() {
   if (m_sdioConfig.useDma()) {
-    return m_busyFcn ? m_busyFcn() : m_initDone && isBusyCMD13();
+    return m_busyFcn ? (this->*m_busyFcn)() : m_initDone && isBusyCMD13();
   } else {
     if (m_transferActive) {
       if (isBusyTransferComplete()) {
         return true;
       }
-#if defined(__MK64FX512__) || defined(__MK66FX1M0__)
-      if ((SDHC_BLKATTR & 0XFFFF0000) != 0) {
-        return false;
-      }
-      m_transferActive = false;
-      stopTransmission(false);
-      return true;
-#else  // defined(__MK64FX512__) || defined(__MK66FX1M0__)
       return false;
-#endif  // defined(__MK64FX512__) || defined(__MK66FX1M0__)
     }
     // Use DAT0 low as busy.
-    return SDHC_PRSSTAT & (1 << 24) ? false : true;
+    return m_psdhc->PRES_STATE & (1 << 24) ? false : true;
   }
 }
 //------------------------------------------------------------------------------
@@ -843,29 +818,29 @@ bool SdioCard::readData(uint8_t* dst) {
   DBG_IRQSTAT();
   uint32_t* p32 = reinterpret_cast<uint32_t*>(dst);
 
-  if (!(SDHC_PRSSTAT & SDHC_PRSSTAT_RTA)) {
-    SDHC_PROCTL &= ~SDHC_PROCTL_SABGREQ;
+  if (!(m_psdhc->PRES_STATE & SDHC_PRSSTAT_RTA)) {
+    m_psdhc->PROT_CTRL &= ~SDHC_PROCTL_SABGREQ;
     noInterrupts();
-    SDHC_PROCTL |= SDHC_PROCTL_CREQ;
-    SDHC_PROCTL |= SDHC_PROCTL_SABGREQ;
+    m_psdhc->PROT_CTRL |= SDHC_PROCTL_CREQ;
+    m_psdhc->PROT_CTRL |= SDHC_PROCTL_SABGREQ;
     interrupts();
   }
-  if (waitTimeout(isBusyFifoRead)) {
+  if (waitTimeout(&SdioCard::isBusyFifoRead)) {
     return sdError(SD_CARD_ERROR_READ_FIFO);
   }
   for (uint32_t iw = 0 ; iw < 512/(4*FIFO_WML); iw++) {
-    while (0 == (SDHC_PRSSTAT & SDHC_PRSSTAT_BREN)) {
+    while (0 == (m_psdhc->PRES_STATE & SDHC_PRSSTAT_BREN)) {
     }
     for (uint32_t i = 0; i < FIFO_WML; i++) {
-      p32[i] = SDHC_DATPORT;
+      p32[i] = m_psdhc->DATA_BUFF_ACC_PORT;
     }
     p32 += FIFO_WML;
   }
-  if (waitTimeout(isBusyTransferComplete)) {
+  if (waitTimeout(&SdioCard::isBusyTransferComplete)) {
     return sdError(SD_CARD_ERROR_READ_TIMEOUT);
   }
-  m_irqstat = SDHC_IRQSTAT;
-  SDHC_IRQSTAT = m_irqstat;
+  m_irqstat = m_psdhc->INT_STATUS;
+  m_psdhc->INT_STATUS = m_irqstat;
   return (m_irqstat & SDHC_IRQSTAT_TC) && !(m_irqstat & SDHC_IRQSTAT_ERROR);
 }
 //------------------------------------------------------------------------------
@@ -903,13 +878,6 @@ bool SdioCard::readSector(uint32_t sector, uint8_t* dst) {
     if (!readData(dst)) {
       return false;
     }
-#if defined(__MK64FX512__) || defined(__MK66FX1M0__)
-    if ((SDHC_BLKATTR & 0XFFFF0000) == 0) {
-      if (!syncDevice()) {
-        return false;
-      }
-    }
-#endif  // defined(__MK64FX512__) || defined(__MK66FX1M0__)
     m_curSector++;
   }
   return true;
@@ -941,17 +909,12 @@ bool SdioCard::readSectors(uint32_t sector, uint8_t* dst, size_t n) {
 // SDHC will do Auto CMD12 after count sectors.
 bool SdioCard::readStart(uint32_t sector) {
   DBG_IRQSTAT();
-  if (yieldTimeout(isBusyCMD13)) {
+  if (yieldTimeout(&SdioCard::isBusyCMD13)) {
     return sdError(SD_CARD_ERROR_CMD13);
   }
-  SDHC_PROCTL |= SDHC_PROCTL_SABGREQ;
-#if defined(__IMXRT1062__)
+  m_psdhc->PROT_CTRL |= SDHC_PROCTL_SABGREQ;
   // Infinite transfer.
-  SDHC_BLKATTR = SDHC_BLKATTR_BLKSIZE(512);
-#else  // defined(__IMXRT1062__)
-  // Errata - can't do infinite transfer.
-  SDHC_BLKATTR = SDHC_BLKATTR_BLKCNT(MAX_BLKCNT) | SDHC_BLKATTR_BLKSIZE(512);
-#endif  // defined(__IMXRT1062__)
+  m_psdhc->BLK_ATT = SDHC_BLKATTR_BLKSIZE(512);
 
   if (!cardCommand(CMD18_PGM_XFERTYP, m_highCapacity ? sector : 512*sector)) {
     return sdError(SD_CARD_ERROR_CMD18);
@@ -974,12 +937,12 @@ uint32_t SdioCard::status() {
 bool SdioCard::stopTransmission(bool blocking) {
   m_curState = IDLE_STATE;
   // This fix allows CDIHB to be cleared in Tennsy 3.x without a reset.
-  SDHC_PROCTL &= ~SDHC_PROCTL_SABGREQ;
+  m_psdhc->PROT_CTRL &= ~SDHC_PROCTL_SABGREQ;
   if (!cardCommand(CMD12_XFERTYP, 0)) {
     return sdError(SD_CARD_ERROR_CMD12);
   }
   if (blocking) {
-    if (yieldTimeout(isBusyDat)) {
+    if (yieldTimeout(&SdioCard::isBusyDat)) {
       return sdError(SD_CARD_ERROR_CMD13);
     }
   }
@@ -1007,19 +970,19 @@ bool SdioCard::writeData(const uint8_t* src) {
     return false;
   }
   const uint32_t* p32 = reinterpret_cast<const uint32_t*>(src);
-  if (!(SDHC_PRSSTAT & SDHC_PRSSTAT_WTA)) {
-    SDHC_PROCTL &= ~SDHC_PROCTL_SABGREQ;
-    SDHC_PROCTL |= SDHC_PROCTL_CREQ;
+  if (!(m_psdhc->PRES_STATE & SDHC_PRSSTAT_WTA)) {
+    m_psdhc->PROT_CTRL &= ~SDHC_PROCTL_SABGREQ;
+    m_psdhc->PROT_CTRL |= SDHC_PROCTL_CREQ;
   }
-  SDHC_PROCTL |= SDHC_PROCTL_SABGREQ;
-  if (waitTimeout(isBusyFifoWrite)) {
+  m_psdhc->PROT_CTRL |= SDHC_PROCTL_SABGREQ;
+  if (waitTimeout(&SdioCard::isBusyFifoWrite)) {
     return sdError(SD_CARD_ERROR_WRITE_FIFO);
   }
   for (uint32_t iw = 0 ; iw < 512/(4*FIFO_WML); iw++) {
-    while (0 == (SDHC_PRSSTAT & SDHC_PRSSTAT_BWEN)) {
+    while (0 == (m_psdhc->PRES_STATE & SDHC_PRSSTAT_BWEN)) {
     }
     for (uint32_t i = 0; i < FIFO_WML; i++) {
-      SDHC_DATPORT = p32[i];
+      m_psdhc->DATA_BUFF_ACC_PORT = p32[i];
     }
     p32 += FIFO_WML;
   }
@@ -1044,14 +1007,6 @@ bool SdioCard::writeSector(uint32_t sector, const uint8_t* src) {
     if (!waitTransferComplete()) {
       return false;
     }
-#if defined(__MK64FX512__) || defined(__MK66FX1M0__)
-    // End transfer with CMD12 if required.
-    if ((SDHC_BLKATTR & 0XFFFF0000) == 0) {
-      if (!syncDevice()) {
-        return false;
-      }
-    }
-#endif  // defined(__MK64FX512__) || defined(__MK66FX1M0__)
     if (m_curState != WRITE_STATE || m_curSector != sector) {
       if (!syncDevice()) {
         return false;
@@ -1095,18 +1050,13 @@ bool SdioCard::writeSectors(uint32_t sector, const uint8_t* src, size_t n) {
 }
 //------------------------------------------------------------------------------
 bool SdioCard::writeStart(uint32_t sector) {
-  if (yieldTimeout(isBusyCMD13)) {
+  if (yieldTimeout(&SdioCard::isBusyCMD13)) {
     return sdError(SD_CARD_ERROR_CMD13);
   }
-  SDHC_PROCTL &= ~SDHC_PROCTL_SABGREQ;
+  m_psdhc->PROT_CTRL &= ~SDHC_PROCTL_SABGREQ;
 
-#if defined(__IMXRT1062__)
   // Infinite transfer.
-  SDHC_BLKATTR = SDHC_BLKATTR_BLKSIZE(512);
-#else  // defined(__IMXRT1062__)
-  // Errata - can't do infinite transfer.
-  SDHC_BLKATTR = SDHC_BLKATTR_BLKCNT(MAX_BLKCNT) | SDHC_BLKATTR_BLKSIZE(512);
-#endif  // defined(__IMXRT1062__)
+  m_psdhc->BLK_ATT = SDHC_BLKATTR_BLKSIZE(512);
   if (!cardCommand(CMD25_PGM_XFERTYP, m_highCapacity ? sector : 512*sector)) {
     return sdError(SD_CARD_ERROR_CMD25);
   }

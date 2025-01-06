@@ -228,6 +228,8 @@
 #define CCM_ANALOG_PFD_528_PFD3_FRAC_MASK ((0x3f<<24)
 #define CCM_ANALOG_PFD_528_PFD3_FRAC(n) (((n)<<24) & CCM_ANALOG_PFD_528_PFD3_FRAC_MASK)
 
+
+#if 0
 #define SDHC_DSADDR       (USDHC1_DS_ADDR ) // DMA System Address register
 #define SDHC_BLKATTR      (USDHC1_BLK_ATT) // Block Attributes register
 #define SDHC_CMDARG       (USDHC1_CMD_ARG) // Command Argument register
@@ -253,6 +255,7 @@
 #define SDHC_VENDOR       (USDHC1_VEND_SPEC) // Vendor Specific register
 #define SDHC_MMCBOOT      (USDHC1_MMC_BOOT) // MMC Boot register
 #define SDHC_VENDOR2    (USDHC2_VEND_SPEC2) // Vendor Specific2 register
+#endif
 //
 #define IRQ_SDHC    IRQ_SDHC1
 

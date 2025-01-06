@@ -29,6 +29,49 @@
 
 #define FIFO_SDIO 0
 #define DMA_SDIO 1
+
+#define USE_SDIO2 2
+
+#if 0 //defined(__IMXRT1062__)
+// Temporary experiment 
+// Define as class -> move to imxrt.h
+typedef struct {
+        volatile uint32_t DS_ADDR;                  //offset000)
+        volatile uint32_t BLK_ATT;                  //offset004)
+        volatile uint32_t CMD_ARG;                  //offset008)
+        volatile uint32_t CMD_XFR_TYP;              //offset00C)
+        volatile uint32_t CMD_RSP0;                 //offset010)
+        volatile uint32_t CMD_RSP1;                 //offset014)
+        volatile uint32_t CMD_RSP2;                 //offset018)
+        volatile uint32_t CMD_RSP3;                 //offset01C)
+        volatile uint32_t DATA_BUFF_ACC_PORT;       //offset020)
+        volatile uint32_t PRES_STATE;               //offset024)
+        volatile uint32_t PROT_CTRL;                //offset028)
+        volatile uint32_t SYS_CTRL;                 //offset02C)
+        volatile uint32_t INT_STATUS;               //offset030)
+        volatile uint32_t INT_STATUS_EN;            //offset034)
+        volatile uint32_t INT_SIGNAL_EN;            //offset038)
+        volatile uint32_t AUTOCMD12_ERR_STATUS;     //offset03C)
+        volatile uint32_t HOST_CTRL_CAP;            //offset040)
+        volatile uint32_t WTMK_LVL;                 //offset044)
+        volatile uint32_t MIX_CTRL;                 //offset048)
+        uint32_t unused1;
+        volatile uint32_t FORCE_EVENT;              //offset050)
+        volatile uint32_t ADMA_ERR_STATUS;          //offset054)
+        volatile uint32_t ADMA_SYS_ADDR;            //offset058)
+        uint32_t unused2;
+        volatile uint32_t DLL_CTRL;                 //offset060)
+        volatile uint32_t DLL_STATUS;               //offset064)
+        volatile uint32_t CLK_TUNE_CTRL_STATUS;     //offset068)
+        uint32_t unused3[21];                       //6c 70 80 90 A0 B0
+        volatile uint32_t VEND_SPEC;                //offset0C0)
+        volatile uint32_t MMC_BOOT;                 //offset0C4)
+        volatile uint32_t VEND_SPEC2;               //offset0C8)
+        volatile uint32_t TUNING_CTRL;              //offset0CC)
+} IMXRT_USDHC_t;
+
+#endif
+
 /**
  * \class SdioConfig
  * \brief SDIO card configuration.
@@ -250,5 +293,62 @@ class SdioCard : public SdCardInterface {
   uint32_t m_curSector;
   SdioConfig m_sdioConfig;
   uint8_t m_curState = IDLE_STATE;
+#if defined(__IMXRT1062__)
+  // move helper functions into class.
+  typedef bool (SdioCard::*pcheckfcn)();
+  bool cardCommand(uint32_t xfertyp, uint32_t arg);
+  void enableGPIO(bool enable, bool fUseSDIO2);
+  void enableDmaIrs();
+  void initSDHC();
+  bool isBusyCMD13();
+  bool isBusyCommandComplete();
+  bool isBusyCommandInhibit();
+  bool readReg16(uint32_t xfertyp, void* data);
+  void setSdclk(uint32_t kHzMax);
+  bool yieldTimeout(pcheckfcn fcn);
+  bool waitDmaStatus();
+  bool waitTimeout(pcheckfcn fcn);
+  inline bool setSdErrorCode(uint8_t code, uint32_t line);
+
+/////////////////////////////////////////////
+ static void   sdIrs();
+ static void   sdIrs2(); // one for second SDIO
+ static SdioCard *s_pSdioCards[2];
+ void   gpioMux(uint8_t mode, bool fUseSDIO2);
+ void   initClock(bool fUseSDIO2);
+ uint32_t   baseClock();
+ bool   cardAcmd(uint32_t rca, uint32_t xfertyp, uint32_t arg);
+ bool   cardCMD6(uint32_t arg, uint8_t* status);
+ uint32_t   statusCMD13();
+ bool   isBusyDat();
+ bool   isBusyDMA();
+ bool   isBusyFifoRead();
+ bool   isBusyFifoWrite();
+ bool   isBusyTransferComplete();
+ bool   rdWrSectors(uint32_t xferty, uint32_t sector, uint8_t* buf, size_t n);
+
+ bool   transferStop();
+ bool   waitTransferComplete();
+ void   printRegs(uint32_t line);
+/////////////////////////////////////////////////////
+  // lets move glbabal (static) variables into class instance.
+  IMXRT_USDHC_t *m_psdhc;
+  pcheckfcn m_busyFcn = nullptr;
+  bool m_initDone = false;
+  bool m_version2;
+  bool m_highCapacity;
+  bool m_transferActive = false;
+  uint8_t m_errorCode = SD_CARD_ERROR_INIT_NOT_CALLED;
+  uint32_t m_errorLine = 0;
+  uint32_t m_rca;
+  volatile bool m_dmaBusy = false;
+  volatile uint32_t m_irqstat;
+  uint32_t m_sdClkKhz = 0;
+  uint32_t m_ocr;
+  cid_t m_cid;
+  csd_t m_csd;
+
+#endif
 };
+
 #endif  // SdioCard_h
