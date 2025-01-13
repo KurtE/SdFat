@@ -24,7 +24,7 @@
  */
 #include "SdSpiDriver.h"
 #if defined(SD_USE_CUSTOM_SPI) &&  defined(__arm__) && defined(CORE_TEENSY)
-#define USE_BLOCK_TRANSFER 1
+#define USE_TRANSFER_TX_RX 1
 //------------------------------------------------------------------------------
 void SdSpiArduinoDriver::activate() {
   m_spi->beginTransaction(m_spiSettings);
@@ -59,14 +59,13 @@ uint8_t SdSpiArduinoDriver::receive() {
 }
 //------------------------------------------------------------------------------
 uint8_t SdSpiArduinoDriver::receive(uint8_t* buf, size_t count) {
-#if USE_BLOCK_TRANSFER
+#ifdef USE_TRANSFER_TX_RX
+  m_spi->setTransferWriteFill(0xff);
+  m_spi->transfer(nullptr, buf, count);
+#else  
   memset(buf, 0XFF, count);
   m_spi->transfer(buf, count);
-#else  // USE_BLOCK_TRANSFER
-  for (size_t i = 0; i < count; i++) {
-    buf[i] = m_spi->transfer(0XFF);
-  }
-#endif  // USE_BLOCK_TRANSFER
+#endif
   return 0;
 }
 //------------------------------------------------------------------------------
@@ -75,16 +74,16 @@ void SdSpiArduinoDriver::send(uint8_t data) {
 }
 //------------------------------------------------------------------------------
 void SdSpiArduinoDriver::send(const uint8_t* buf , size_t count) {
-#if USE_BLOCK_TRANSFER
+#ifdef USE_TRANSFER_TX_RX
+  m_spi->transfer(buf, nullptr, count);
+#else
   uint32_t tmp[128];
   if (0 < count && count <= 512) {
     memcpy(tmp, buf, count);
     m_spi->transfer(tmp, count);
     return;
   }
-#endif  // USE_BLOCK_TRANSFER
-  for (size_t i = 0; i < count; i++) {
-    m_spi->transfer(buf[i]);
-  }
+
+#endif  
 }
 #endif  // defined(SD_USE_CUSTOM_SPI) && defined(__arm__) &&defined(CORE_TEENSY)
